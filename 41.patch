@@ -1,0 +1,157 @@
+diff --git a/linux-3.19/Makefile b/linux-3.19/Makefile
+index b15036b..893a208 100644
+--- a/linux-3.19/Makefile
++++ b/linux-3.19/Makefile
+@@ -879,7 +879,7 @@ export mod_sign_cmd
+ 
+ 
+ ifeq ($(KBUILD_EXTMOD),)
+-core-y		+= kernel/ mm/ fs/ ipc/ security/ crypto/ block/
++core-y		+= kernel/ mm/ fs/ ipc/ security/ crypto/ block/ info/
+ 
+ vmlinux-dirs	:= $(patsubst %/,%,$(filter %/, $(init-y) $(init-m) \
+ 		     $(core-y) $(core-m) $(drivers-y) $(drivers-m) \
+diff --git a/linux-3.19/arch/x86/syscalls/syscall_64.tbl b/linux-3.19/arch/x86/syscalls/syscall_64.tbl
+index 8d656fb..6999f27 100644
+--- a/linux-3.19/arch/x86/syscalls/syscall_64.tbl
++++ b/linux-3.19/arch/x86/syscalls/syscall_64.tbl
+@@ -329,7 +329,7 @@
+ 320	common	kexec_file_load		sys_kexec_file_load
+ 321	common	bpf			sys_bpf
+ 322	64	execveat		stub_execveat
+-
++323	common	listProcessInfo		sys_listProcessInfo
+ #
+ # x32-specific system call numbers start at 512 to avoid cache impact
+ # for native 64-bit operation.
+diff --git a/linux-3.19/include/linux/sched.h b/linux-3.19/include/linux/sched.h
+index 8db31ef..c687d37 100644
+--- a/linux-3.19/include/linux/sched.h
++++ b/linux-3.19/include/linux/sched.h
+@@ -1168,7 +1168,7 @@ struct sched_entity {
+ 	u64			sum_exec_runtime;
+ 	u64			vruntime;
+ 	u64			prev_sum_exec_runtime;
+-
++	u64			rt_nice;
+ 	u64			nr_migrations;
+ 
+ #ifdef CONFIG_SCHEDSTATS
+diff --git a/linux-3.19/include/linux/syscalls.h b/linux-3.19/include/linux/syscalls.h
+index 85893d7..08fb217 100644
+--- a/linux-3.19/include/linux/syscalls.h
++++ b/linux-3.19/include/linux/syscalls.h
+@@ -881,5 +881,5 @@ asmlinkage long sys_bpf(int cmd, union bpf_attr *attr, unsigned int size);
+ asmlinkage long sys_execveat(int dfd, const char __user *filename,
+ 			const char __user *const __user *argv,
+ 			const char __user *const __user *envp, int flags);
+-
++asmlinkage long sys_listProcessInfo(long, u64);
+ #endif
+diff --git a/linux-3.19/info/Makefile b/linux-3.19/info/Makefile
+new file mode 100644
+index 0000000..8dc6776
+--- /dev/null
++++ b/linux-3.19/info/Makefile
+@@ -0,0 +1 @@
++obj-y:=listProcessInfo.o
+diff --git a/linux-3.19/info/listProcessInfo.c b/linux-3.19/info/listProcessInfo.c
+new file mode 100644
+index 0000000..c5ad642
+--- /dev/null
++++ b/linux-3.19/info/listProcessInfo.c
+@@ -0,0 +1,47 @@
++#include<linux/kernel.h>
++#include<linux/init.h>
++#include<linux/sched.h>
++#include<linux/syscalls.h>
++
++#include "processInfo.h"
++
++asmlinkage long sys_listProcessInfo(long pid,u64 rt) {
++
++    struct task_struct *proces;
++ 
++    for_each_process(proces) {
++ 	if(task_pid_nr(proces)==pid)
++	{
++	 proces->se.rt_nice=rt;  
++	 printk(
++      "Process: %s\n \
++       PID_Number: %ld\n \
++       Process State: %ld\n \
++       Priority: %ld\n \
++       RT_PrioritySESE: %d\n \
++       Static Priority: %ld\n \
++       Normal Priority: %ld\n", \
++       proces->comm, \
++       (long)task_pid_nr(proces), \
++       (long)proces->state, \
++       (long)proces->prio, \
++       proces->se.rt_nice, \
++       (long)proces->static_prio, \
++       (long)proces->normal_prio \
++    );
++  
++  
++   if(proces->parent) 
++      printk(
++        "Parent process: %s, \
++         PID_Number: %ld", \ 
++         proces->parent->comm, \
++         (long)task_pid_nr(proces->parent) \
++      );
++  
++   printk("\n\n");
++  }
++  }
++  
++  return 0;
++}
+diff --git a/linux-3.19/info/processInfo.h b/linux-3.19/info/processInfo.h
+new file mode 100644
+index 0000000..a093e61
+--- /dev/null
++++ b/linux-3.19/info/processInfo.h
+@@ -0,0 +1 @@
++asmlinkage long sys_listProcessInfo(long, u64);
+diff --git a/linux-3.19/kernel/sched/core.c b/linux-3.19/kernel/sched/core.c
+index 5eab11d..76e45fe 100644
+--- a/linux-3.19/kernel/sched/core.c
++++ b/linux-3.19/kernel/sched/core.c
+@@ -1829,7 +1829,7 @@ void __dl_clear_params(struct task_struct *p)
+ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
+ {
+ 	p->on_rq			= 0;
+-
++	p->se.rt_nice			= 0;
+ 	p->se.on_rq			= 0;
+ 	p->se.exec_start		= 0;
+ 	p->se.sum_exec_runtime		= 0;
+diff --git a/linux-3.19/kernel/sched/fair.c b/linux-3.19/kernel/sched/fair.c
+index fe331fc..b8778d8 100644
+--- a/linux-3.19/kernel/sched/fair.c
++++ b/linux-3.19/kernel/sched/fair.c
+@@ -456,7 +456,10 @@ static inline u64 min_vruntime(u64 min_vruntime, u64 vruntime)
+ static inline int entity_before(struct sched_entity *a,
+ 				struct sched_entity *b)
+ {
+-	return (s64)(a->vruntime - b->vruntime) < 0;
++	if(a->rt_nice == b->rt_nice)	
++		return (s64)(a->vruntime - b->vruntime) < 0;
++	else
++		return (s64)(a->rt_nice - b->rt_nice) > 0;
+ }
+ 
+ static void update_min_vruntime(struct cfs_rq *cfs_rq)
+@@ -701,6 +704,10 @@ static void update_curr(struct cfs_rq *cfs_rq)
+ 		return;
+ 
+ 	delta_exec = now - curr->exec_start;
++	if(curr->rt_nice>delta_exec)		
++		curr->rt_nice=curr->rt_nice-delta_exec;
++	else
++		curr->rt_nice=0;
+ 	if (unlikely((s64)delta_exec <= 0))
+ 		return;
+ 
